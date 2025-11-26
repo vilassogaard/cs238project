@@ -245,7 +245,7 @@ void print_results(const std::map<std::string, StateData>& state_map) {
 }
 
 // calculate alpha using random sampling - FAST approximation
-void calculate_alpha_sampling(const std::map<std::string, StateData>& state_map, int total_seats) {
+float calculate_alpha_sampling(const std::map<std::string, StateData>& state_map, int total_seats) {
     
     std::vector<std::string> states;
     std::vector<int> state_pops;
@@ -342,63 +342,351 @@ void calculate_alpha_sampling(const std::map<std::string, StateData>& state_map,
     std::cout << "seat proportion: " << worst_seat_prop * 100 << "%" << std::endl;
     std::cout << "ratio (alpha): " << min_alpha << std::endl;
 
+    return min_alpha;
+
+}
+
+// calculate alpha using random sampling - FAST approximation. uses (threshold) amount instead of purely random sampling
+float calculate_alpha_sampling(const std::map<std::string, StateData>& state_map, int total_seats, float threshold) {
+    
+    std::vector<std::string> states;
+    std::vector<int> state_pops;
+    std::vector<int> state_seats;
+    
+    for (const auto& [state, data] : state_map) { // pre-compute arrays for faster lookup
+        
+        states.push_back(state);
+        state_pops.push_back(data.population);
+        state_seats.push_back(data.seats);
+    
+    }
+    
+    int n = states.size();
+    long long num_samples = 100000000; // number of samples
+    
+    int total_pop = get_total_population(state_map);
+    float min_alpha = 1.0;
+    long long worst_mask = 0; // store mask instead of subset vector
+    float worst_pop_prop = 0;
+    float worst_seat_prop = 0;
+    
+    std::cout << "sampling " << num_samples << " random subsets with threshold " << threshold << " out of " 
+              << ((1LL << n) - 2) << " total samples..." << std::endl;
+    
+    // seed random number generator
+    std::srand(std::time(nullptr));
+    
+    for (long long sample = 0; sample < num_samples; sample++) {
+        
+        // generate random subset mask
+        long long mask = 0;
+        for (int i = 0; i < n; i++) {
+            if (std::rand() > (1 - threshold) * RAND_MAX) { // we want (threshold) amount to be included
+                mask |= (1LL << i);
+            }
+        }
+        
+        if (mask == 0 || mask == (1LL << n) - 1) // skip empty and full set
+            continue;
+        
+        int subset_pop = 0;
+        int subset_seats = 0;
+        
+        for (int i = 0; i < n; i++) { // fast lookup using arrays instead of map
+            
+            if (mask & (1LL << i)) {
+                
+                subset_pop += state_pops[i];
+                subset_seats += state_seats[i];
+            
+            }
+        }
+        
+        float pop_proportion = (float)subset_pop / total_pop;
+        float seat_proportion = (float)subset_seats / total_seats;
+        
+        if (pop_proportion > 0.0001) {
+            
+            float alpha = seat_proportion / pop_proportion;
+            
+            if (alpha < min_alpha) {
+                
+                min_alpha = alpha;
+                worst_mask = mask; // just store the mask
+                worst_pop_prop = pop_proportion;
+                worst_seat_prop = seat_proportion;
+            
+            }
+        }
+        
+        if (sample % (num_samples / 10) == 0 && sample > 0) {
+            std::cout << "checked " << sample << " / " << num_samples << " samples (" 
+                      << (100.0 * sample / num_samples) << "%)..." << std::endl;
+        }
+    }
+    
+    std::vector<std::string> worst_subset; // reconstruct worst subset at the end
+    
+    for (int i = 0; i < n; i++) {
+        
+        if (worst_mask & (1LL << i)) 
+            worst_subset.push_back(states[i]);
+    
+    }
+    
+    std::cout << "\n[APPROXIMATE] alpha >= " << min_alpha << " (based on " << num_samples << " samples)" << std::endl;
+    std::cout << "\nworst subset found (" << worst_subset.size() << " states):" << std::endl;
+    
+    for (const std::string& state : worst_subset) 
+        std::cout << "  " << state;
+    
+    std::cout << "\npopulation proportion: " << worst_pop_prop * 100 << "%" << std::endl;
+    std::cout << "seat proportion: " << worst_seat_prop * 100 << "%" << std::endl;
+    std::cout << "ratio (alpha): " << min_alpha << std::endl;
+
+    return min_alpha;
+
 }
 
 int main() {
     
     std::map<std::string, StateData> state_map = read_state_data("state_populations.csv");
     int total_seats = 435;
-    
-    std::cout << "=== hamilton's method ===" << std::endl;
-    hamiltons_method(state_map, total_seats);
-    calculate_alpha_sampling(state_map, total_seats);
-    
-    std::cout << "\n\n=== jefferson's method ===" << std::endl;
-    jeffersons_method(state_map, total_seats);
-    calculate_alpha_sampling(state_map, total_seats);
-    
-    std::cout << "\n\n=== webster's method ===" << std::endl;
-    websters_method(state_map, total_seats);
-    calculate_alpha_sampling(state_map, total_seats);
-    
-    std::cout << "\n\n=== adams' method ===" << std::endl;
-    adams_method(state_map, total_seats);
-    calculate_alpha_sampling(state_map, total_seats);
-    
-    std::cout << "\n\n=== huntington-hill method ===" << std::endl;
-    huntington_hill_method(state_map, total_seats);
-    calculate_alpha_sampling(state_map, total_seats);
+
+    float min_hamilton_alpha = 1;
+    float min_jefferson_alpha = 1;
+    float min_webster_alpha = 1;
+    float min_adams_alpha = 1;
+    float min_hh_alpha = 1;
+
+    float curr;
+
+    /*
+
+    for (int i = 0; i < 10; i++) {
+
+        std::cout << "=== RUN " << i << " ===" << std::endl;
+
+        std::cout << std::endl;
+
+        std::cout << "=== hamilton's method ===" << std::endl;
+        hamiltons_method(state_map, total_seats);
+        curr = calculate_alpha_sampling(state_map, total_seats);
+
+        min_hamilton_alpha = std::min(curr, min_hamilton_alpha);
+        
+        std::cout << "\n\n=== jefferson's method ===" << std::endl;
+        jeffersons_method(state_map, total_seats);
+        curr = calculate_alpha_sampling(state_map, total_seats);
+
+        min_jefferson_alpha = std::min(curr, min_jefferson_alpha);
+        
+        std::cout << "\n\n=== webster's method ===" << std::endl;
+        websters_method(state_map, total_seats);
+        curr = calculate_alpha_sampling(state_map, total_seats);
+
+        min_webster_alpha = std::min(curr, min_webster_alpha);
+        
+        std::cout << "\n\n=== adams' method ===" << std::endl;
+        adams_method(state_map, total_seats);
+        curr = calculate_alpha_sampling(state_map, total_seats);
+
+        min_adams_alpha = std::min(curr, min_adams_alpha);
+        
+        std::cout << "\n\n=== huntington-hill method ===" << std::endl;
+        huntington_hill_method(state_map, total_seats);
+        curr = calculate_alpha_sampling(state_map, total_seats);
+
+        min_hh_alpha = std::min(curr, min_hh_alpha);
+
+        std::cout << std::endl;
+        std::cout << std::endl;
+
+    }
+
+    std::cout << "MINIMUM hamilton alpha: " << min_hamilton_alpha << std::endl;
+    std::cout << "MINIMUM jefferson alpha: " << min_jefferson_alpha << std::endl;
+    std::cout << "MINIMUM webster alpha: " << min_webster_alpha << std::endl;
+    std::cout << "MINIMUM adams alpha: " << min_adams_alpha << std::endl;
+    std::cout << "MINIMUM huntington hill alpha: " << min_hh_alpha << std::endl;
+
+    */
+
+    /*
+
+    float threshold = 0.7; // amount you want in the coalition
+
+    for (int i = 0; i < 10; i++) {
+
+        std::cout << "=== RUN " << i << " ===" << std::endl;
+
+        std::cout << std::endl;
+
+        std::cout << "=== hamilton's method ===" << std::endl;
+        hamiltons_method(state_map, total_seats);
+        curr = calculate_alpha_sampling(state_map, total_seats, threshold);
+
+        min_hamilton_alpha = std::min(curr, min_hamilton_alpha);
+        
+        std::cout << "\n\n=== jefferson's method ===" << std::endl;
+        jeffersons_method(state_map, total_seats);
+        curr = calculate_alpha_sampling(state_map, total_seats, threshold);
+
+        min_jefferson_alpha = std::min(curr, min_jefferson_alpha);
+        
+        std::cout << "\n\n=== webster's method ===" << std::endl;
+        websters_method(state_map, total_seats);
+        curr = calculate_alpha_sampling(state_map, total_seats, threshold);
+
+        min_webster_alpha = std::min(curr, min_webster_alpha);
+        
+        std::cout << "\n\n=== adams' method ===" << std::endl;
+        adams_method(state_map, total_seats);
+        curr = calculate_alpha_sampling(state_map, total_seats, threshold);
+
+        min_adams_alpha = std::min(curr, min_adams_alpha);
+        
+        std::cout << "\n\n=== huntington-hill method ===" << std::endl;
+        huntington_hill_method(state_map, total_seats);
+        curr = calculate_alpha_sampling(state_map, total_seats, threshold);
+
+        min_hh_alpha = std::min(curr, min_hh_alpha);
+
+        std::cout << std::endl;
+        std::cout << std::endl;
+
+    }
+
+    std::cout << "MINIMUM hamilton alpha with threshold " << threshold << ": " << min_hamilton_alpha << std::endl;
+    std::cout << "MINIMUM jefferson alpha with threshold " << threshold << ": " << min_jefferson_alpha << std::endl;
+    std::cout << "MINIMUM webster alpha with threshold " << threshold << ": " << min_webster_alpha << std::endl;
+    std::cout << "MINIMUM adams alpha with threshold " << threshold << ": " << min_adams_alpha << std::endl;
+    std::cout << "MINIMUM huntington hill alpha with threshold " << threshold << ": " << min_hh_alpha << std::endl;
+
+    */
+
+    float threshold = 0; // amount you want in the coalition
+    std::vector<float> alphas_hamilton;
+    std::vector<float> alphas_jefferson;
+    std::vector<float> alphas_webster;
+    std::vector<float> alphas_adams;
+    std::vector<float> alphas_hh;
+
+    for (int k = 0; k < 10; k++) {
+
+        threshold += 0.1;
+
+        for (int i = 0; i < 5; i++) {
+
+            // resetting minimums
+
+            min_hamilton_alpha = 1;
+            min_jefferson_alpha = 1;
+            min_webster_alpha = 1;
+            min_adams_alpha = 1;
+            min_hh_alpha = 1;
+
+            std::cout << "=== RUN " << i << " ===" << std::endl;
+
+            std::cout << std::endl;
+
+            std::cout << "=== hamilton's method ===" << std::endl;
+            hamiltons_method(state_map, total_seats);
+            curr = calculate_alpha_sampling(state_map, total_seats, threshold);
+
+            min_hamilton_alpha = std::min(curr, min_hamilton_alpha);
+            alphas_hamilton.push_back(min_hamilton_alpha);
+            
+            std::cout << "\n\n=== jefferson's method ===" << std::endl;
+            jeffersons_method(state_map, total_seats);
+            curr = calculate_alpha_sampling(state_map, total_seats, threshold);
+
+            min_jefferson_alpha = std::min(curr, min_jefferson_alpha);
+            alphas_jefferson.push_back(min_jefferson_alpha);
+            
+            std::cout << "\n\n=== webster's method ===" << std::endl;
+            websters_method(state_map, total_seats);
+            curr = calculate_alpha_sampling(state_map, total_seats, threshold);
+
+            min_webster_alpha = std::min(curr, min_webster_alpha);
+            alphas_webster.push_back(min_webster_alpha);
+            
+            std::cout << "\n\n=== adams' method ===" << std::endl;
+            adams_method(state_map, total_seats);
+            curr = calculate_alpha_sampling(state_map, total_seats, threshold);
+
+            min_adams_alpha = std::min(curr, min_adams_alpha);
+            alphas_adams.push_back(min_adams_alpha);
+            
+            std::cout << "\n\n=== huntington-hill method ===" << std::endl;
+            huntington_hill_method(state_map, total_seats);
+            curr = calculate_alpha_sampling(state_map, total_seats, threshold);
+
+            min_hh_alpha = std::min(curr, min_hh_alpha);
+            alphas_hh.push_back(min_hh_alpha);
+
+            std::cout << std::endl;
+            std::cout << std::endl;
+
+        }
+
+    }
+
+    std::cout << "=== hamilton alphas ===" << std::endl;
+
+    for (int i = 0; i < 50; i++) {
+
+        std::cout << alphas_hamilton[i] << ", ";
+
+    }
+
+    std::cout << std::endl;
+    std::cout << std::endl;
+
+    std::cout << "=== jefferson alphas ===" << std::endl;
+
+    for (int i = 0; i < 50; i++) {
+
+        std::cout << alphas_jefferson[i] << ", ";
+
+    }
+
+    std::cout << std::endl;
+    std::cout << std::endl;
+
+    std::cout << "=== webster alphas ===" << std::endl;
+
+    for (int i = 0; i < 50; i++) {
+
+        std::cout << alphas_webster[i] << ", ";
+
+    }
+
+    std::cout << std::endl;
+    std::cout << std::endl;
+
+    std::cout << "=== adams alphas ===" << std::endl;
+
+    for (int i = 0; i < 50; i++) {
+
+        std::cout << alphas_adams[i] << ", ";
+
+    }
+
+    std::cout << std::endl;
+    std::cout << std::endl;
+
+    std::cout << "=== huntington-hill alphas ===" << std::endl;
+
+    for (int i = 0; i < 50; i++) {
+
+        std::cout << alphas_hh[i] << ", ";
+
+    }
+
+    std::cout << std::endl;
+    std::cout << std::endl;
     
     return 0;
     
 }
-
-// int main() {
-
-//     std::map<std::string, StateData> state_map = read_state_data("state_populations.csv");
-    
-//     int total_seats = 435; // us house size
-    
-//     std::cout << "=== hamilton's method ===";
-//     hamiltons_method(state_map, total_seats);
-//     print_results(state_map);
-    
-//     std::cout << "\n=== jefferson's method ===";
-//     jeffersons_method(state_map, total_seats);
-//     print_results(state_map);
-    
-//     std::cout << "\n=== webster's method ===";
-//     websters_method(state_map, total_seats);
-//     print_results(state_map);
-    
-//     std::cout << "\n=== adams' method ===";
-//     adams_method(state_map, total_seats);
-//     print_results(state_map);
-    
-//     std::cout << "\n=== huntington-hill method (current US) ===";
-//     huntington_hill_method(state_map, total_seats);
-//     print_results(state_map);
-    
-//     return 0;
-
-// }
